@@ -1,0 +1,140 @@
+import json
+import urllib.request
+import urllib.parse
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+
+NOW = int(time.time())
+CUTOFF = NOW - 86400
+TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+def fetch_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "HNDigest/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+print("Fetching best stories...")
+best_ids = fetch_json("https://hacker-news.firebaseio.com/v0/beststories.json")[:200]
+
+items = []
+def fetch_item(item_id):
+    try:
+        return fetch_json(f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json")
+    except:
+        return None
+
+with ThreadPoolExecutor(max_workers=20) as executor:
+    futures = {executor.submit(fetch_item, iid): iid for iid in best_ids}
+    for f in as_completed(futures):
+        result = f.result()
+        if result:
+            items.append(result)
+
+filtered = [
+    it for it in items
+    if it.get("type") == "story"
+    and it.get("time", 0) >= CUTOFF
+    and it.get("score") is not None
+    and not it.get("deleted")
+    and not it.get("dead")
+]
+filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
+top50 = filtered[:50]
+print(f"Found {len(filtered)} stories from last 24h, taking top {len(top50)}")
+
+def esc(s):
+    if not s: return ""
+    return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+def fmt_time(epoch):
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%H:%M UTC")
+
+cards = ""
+for i, item in enumerate(top50, 1):
+    title = esc(item.get("title", "Untitled"))
+    url = item.get("url") or f"https://news.ycombinator.com/item?id={item['id']}"
+    score = item.get("score", 0)
+    comments = item.get("descendants", 0)
+    author = esc(item.get("by", "anon"))
+    t = fmt_time(item.get("time", NOW))
+    hn_link = f"https://news.ycombinator.com/item?id={item['id']}"
+    ss = f"https://api.microlink.io?url={urllib.parse.quote(url, safe='')}&screenshot=true&meta=false&embed=screenshot.url"
+
+    cards += f'''
+    <div class="card">
+      <div class="img-wrap">
+        <span class="rank">#{i}</span>
+        <img src="{esc(ss)}" alt="Screenshot" loading="lazy"
+             onerror="this.parentElement.classList.add('no-img');this.outerHTML='<div class=\\'fallback\\'>Screenshot unavailable</div>'" />
+        <a href="{esc(url)}" target="_blank" rel="noopener" class="overlay">Open site ↗</a>
+      </div>
+      <div class="card-body">
+        <a href="{esc(url)}" target="_blank" rel="noopener" class="title">{title}</a>
+        <div class="meta">
+          <span>{score} ▲</span>
+          <span>💬 {comments}</span>
+          <span>{t}</span>
+          <span>by {author}</span>
+        </div>
+        <a href="{esc(hn_link)}" target="_blank" rel="noopener" class="discuss">💬 Discuss on HN</a>
+      </div>
+    </div>'''
+
+html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hacker News — Top 50 — {TODAY}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#181817;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh}}
+header{{position:sticky;top:0;z-index:100;background:#181817ee;backdrop-filter:blur(10px);border-bottom:1px solid #2e2e2d;padding:16px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
+.logo{{background:#ff6600;color:#fff;font-weight:700;font-size:22px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:6px}}
+header h1{{font-size:20px;font-weight:600;color:#e0e0e0}}
+header .date{{color:#888;font-size:14px}}
+.badge{{background:#ff660022;color:#ff6600;font-size:12px;font-weight:600;padding:4px 10px;border-radius:20px}}
+.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;padding:24px;max-width:1280px;margin:0 auto}}
+@media(max-width:1100px){{.grid{{grid-template-columns:repeat(2,1fr)}}}}
+@media(max-width:720px){{.grid{{grid-template-columns:1fr}}}}
+.card{{background:#212120;border:1px solid #2e2e2d;border-radius:12px;overflow:hidden;transition:border-color .2s,transform .2s}}
+.card:hover{{border-color:#ff6600;transform:translateY(-2px)}}
+.img-wrap{{position:relative;aspect-ratio:16/9;background:#1a1a19;overflow:hidden}}
+.img-wrap img{{width:100%;height:100%;object-fit:cover;display:block}}
+.rank{{position:absolute;top:10px;left:10px;background:#ff6600;color:#fff;font-size:12px;font-weight:700;padding:3px 8px;border-radius:6px;z-index:2}}
+.overlay{{position:absolute;inset:0;background:#ff660099;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:15px;text-decoration:none;opacity:0;transition:opacity .2s}}
+.card:hover .overlay{{opacity:1}}
+.no-img{{background:#1a1a19}}
+.fallback{{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#555;font-size:14px}}
+.card-body{{padding:14px 16px}}
+.title{{color:#e0e0e0;text-decoration:none;font-weight:600;font-size:15px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
+.title:hover{{color:#ff6600}}
+.meta{{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:13px;color:#888}}
+.discuss{{display:inline-block;margin-top:10px;font-size:13px;color:#ff6600;text-decoration:none}}
+.discuss:hover{{text-decoration:underline}}
+footer{{text-align:center;padding:32px;color:#555;font-size:13px;border-top:1px solid #2e2e2d;margin-top:20px}}
+footer a{{color:#ff6600;text-decoration:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Y</div>
+  <h1>Hacker News — Top 50</h1>
+  <span class="date">{TODAY}</span>
+  <span class="badge">{len(top50)} stories</span>
+</header>
+<main class="grid">
+{cards}
+</main>
+<footer>
+  Data via <a href="https://github.com/HackerNews/API" target="_blank">HN API</a> ·
+  Screenshots via <a href="https://microlink.io" target="_blank">Microlink</a> ·
+  Auto-generated on {TODAY}
+</footer>
+</body>
+</html>'''
+
+with open("index.html", "w", encoding="utf-8") as f:
+    f.write(html)
+print(f"Done! Generated {len(top50)} stories for {TODAY}")
