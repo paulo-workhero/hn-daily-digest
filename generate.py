@@ -1,4 +1,5 @@
 import json
+import os
 import urllib.request
 import urllib.parse
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 NOW = int(time.time())
 CUTOFF = NOW - 86400
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+SCREENSHOTS_DIR = "screenshots"
 
 def fetch_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "HNDigest/1.0"})
@@ -43,6 +45,35 @@ filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
 top50 = filtered[:50]
 print(f"Found {len(filtered)} stories from last 24h, taking top {len(top50)}")
 
+# Download screenshots via Microlink
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+def download_screenshot(args):
+    idx, item = args
+    url = item.get("url") or f"https://news.ycombinator.com/item?id={item['id']}"
+    filename = f"{SCREENSHOTS_DIR}/{idx}.jpg"
+    api_url = f"https://api.microlink.io?url={urllib.parse.quote(url, safe='')}&screenshot=true&meta=false&embed=screenshot.url"
+    try:
+        req = urllib.request.Request(api_url, headers={"User-Agent": "HNDigest/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            with open(filename, "wb") as f:
+                f.write(resp.read())
+        print(f"  [{idx}] OK")
+        return idx, True
+    except Exception as e:
+        print(f"  [{idx}] FAILED: {e}")
+        return idx, False
+
+print("Downloading screenshots...")
+screenshot_ok = set()
+with ThreadPoolExecutor(max_workers=5) as executor:
+    tasks = [(i, item) for i, item in enumerate(top50, 1)]
+    for idx, ok in executor.map(download_screenshot, tasks):
+        if ok:
+            screenshot_ok.add(idx)
+
+print(f"Screenshots downloaded: {len(screenshot_ok)}/{len(top50)}")
+
 def esc(s):
     if not s: return ""
     return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
@@ -59,14 +90,17 @@ for i, item in enumerate(top50, 1):
     author = esc(item.get("by", "anon"))
     t = fmt_time(item.get("time", NOW))
     hn_link = f"https://news.ycombinator.com/item?id={item['id']}"
-    ss = f"https://api.microlink.io?url={urllib.parse.quote(url, safe='')}&screenshot=true&meta=false&embed=screenshot.url"
+
+    if i in screenshot_ok:
+        img_tag = f'<img src="screenshots/{i}.jpg" alt="Screenshot" loading="lazy" />'
+    else:
+        img_tag = '<div class="fallback">Screenshot unavailable</div>'
 
     cards += f'''
     <div class="card">
       <div class="img-wrap">
         <span class="rank">#{i}</span>
-        <img src="{esc(ss)}" alt="Screenshot" loading="lazy"
-             onerror="this.parentElement.classList.add('no-img');this.outerHTML='<div class=\\'fallback\\'>Screenshot unavailable</div>'" />
+        {img_tag}
         <a href="{esc(url)}" target="_blank" rel="noopener" class="overlay">Open site ↗</a>
       </div>
       <div class="card-body">
